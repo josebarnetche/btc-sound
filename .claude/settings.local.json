@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:binance-docs.github.io)",
+      "WebFetch(domain:tonejs.github.io)",
+      "WebFetch(domain:www.guitarland.com)",
+      "WebFetch(domain:developers.binance.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:academy.binance.com)",
+      "WebFetch(domain:www.binance.com)",
+      "WebFetch(domain:ui.shadcn.com)",
+      "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir=false --import-alias=\"@/*\" --turbopack --yes)",
+      "Bash(npm install:*)",
+      "Bash(npx shadcn@latest init:*)",
+      "Bash(npx shadcn@latest add:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run dev:*)",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(start http://localhost:3000)",
+      "Bash(test:*)",
+      "Bash(del \"C:\\\\Users\\\\Usuario\\\\Documents\\\\BTC-Sound\\\\hooks\\\\useAudioAnalyser.ts\")",
+      "Bash(npm run lint)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
