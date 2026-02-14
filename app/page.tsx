@@ -25,6 +25,7 @@ export default function Home() {
     playBell,
     getWaveformData,
     getFrequencyData,
+    getVwapInfo,
   } = useBellAudio();
   const { history, addPrice } = usePriceHistory();
 
@@ -82,8 +83,8 @@ export default function Home() {
     setPriceChange(change);
     setTrendDirection(direction);
 
-    // Play bell sound based on direction
-    playBell(direction);
+    // Play bell sound based on price deviation from VWAP
+    playBell(currentPrice);
 
     lastPriceRef.current = currentPrice;
   }, [playBell]);
@@ -115,7 +116,7 @@ export default function Home() {
             BTC Sound
           </h1>
           <p className="text-sm text-zinc-500 text-center">
-            Bitcoin price bells - up = winning, down = deep
+            Bitcoin price bells - pitch follows VWAP deviation
           </p>
         </motion.div>
 
@@ -195,6 +196,7 @@ export default function Home() {
                 onDisable={disableAudio}
                 onVolumeChange={setVolume}
                 onMuteToggle={toggleMute}
+                getVwapInfo={getVwapInfo}
               />
             </CardContent>
           </Card>

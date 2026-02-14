@@ -15,47 +15,34 @@ interface UseBellAudioReturn {
   disableAudio: () => void;
   setVolume: (volume: number) => void;
   toggleMute: () => void;
-  playBell: (direction: 'up' | 'down' | 'neutral') => void;
+  playBell: (price: number) => void;
   getWaveformData: () => Float32Array | null;
   getFrequencyData: () => Float32Array | null;
+  getVwapInfo: () => { vwap: number; deviation: number } | null;
 }
 
-// Bell frequencies for different states
-// UP: Bright, ascending, casino-like winning sound
-// DOWN: Deep, sad, somber sound
-// NEUTRAL: Middle tone
-const BELL_CONFIG = {
-  up: {
-    baseFreq: 880,      // A5 - bright and high
-    harmonicity: 5,     // More metallic harmonics
-    modulationIndex: 4,
-    attack: 0.001,
-    decay: 0.3,
-    release: 0.8,
-  },
-  down: {
-    baseFreq: 220,      // A3 - deep and low
-    harmonicity: 2,
-    modulationIndex: 2,
-    attack: 0.01,
-    decay: 0.5,
-    release: 1.2,
-  },
-  neutral: {
-    baseFreq: 440,      // A4 - middle
-    harmonicity: 3,
-    modulationIndex: 3,
-    attack: 0.005,
-    decay: 0.4,
-    release: 1.0,
-  },
-};
+// Bell frequency range (Hz)
+// Low pitch (far below VWAP) to high pitch (far above VWAP)
+const FREQ_MIN = 150;   // Deep low bell
+const FREQ_MAX = 1400;  // Bright high bell
+const FREQ_CENTER = 440; // A4 - neutral center
+
+// VWAP window settings
+const VWAP_WINDOW_MS = 60000; // 1 minute rolling window
+const MAX_DEVIATION_PERCENT = 0.5; // 0.5% deviation = max pitch shift
 
 const DEFAULT_STATE: BellAudioState = {
   enabled: false,
   volume: 0.7,
   muted: false,
 };
+
+// Price tracking for VWAP calculation
+interface PriceEntry {
+  price: number;
+  volume: number;
+  timestamp: number;
+}
 
 export function useBellAudio(): UseBellAudioReturn {
   const [audioState, setAudioState] = useState<BellAudioState>(DEFAULT_STATE);
@@ -68,6 +55,11 @@ export function useBellAudio(): UseBellAudioReturn {
   const limiterRef = useRef<import('tone').Limiter | null>(null);
   const waveformAnalyserRef = useRef<import('tone').Analyser | null>(null);
   const fftAnalyserRef = useRef<import('tone').Analyser | null>(null);
+
+  // VWAP tracking
+  const priceHistoryRef = useRef<PriceEntry[]>([]);
+  const currentVwapRef = useRef<number | null>(null);
+  const lastDeviationRef = useRef<number>(0);
 
   // Load saved preferences
   useEffect(() => {
@@ -95,6 +87,47 @@ export function useBellAudio(): UseBellAudioReturn {
     }
   }, [audioState.volume, audioState.muted]);
 
+  // Calculate VWAP from price history
+  const calculateVwap = useCallback(() => {
+    const now = Date.now();
+    const cutoff = now - VWAP_WINDOW_MS;
+
+    // Clean old entries
+    priceHistoryRef.current = priceHistoryRef.current.filter(e => e.timestamp > cutoff);
+
+    if (priceHistoryRef.current.length === 0) {
+      return null;
+    }
+
+    // Calculate VWAP: sum(price * volume) / sum(volume)
+    let sumPV = 0;
+    let sumV = 0;
+
+    for (const entry of priceHistoryRef.current) {
+      sumPV += entry.price * entry.volume;
+      sumV += entry.volume;
+    }
+
+    return sumV > 0 ? sumPV / sumV : null;
+  }, []);
+
+  // Map deviation to frequency
+  // deviation: -1 to 1 (normalized), where -1 = far below VWAP, 1 = far above VWAP
+  const deviationToFrequency = useCallback((deviation: number): number => {
+    // Clamp deviation to -1 to 1
+    const clampedDev = Math.max(-1, Math.min(1, deviation));
+
+    if (clampedDev >= 0) {
+      // Above VWAP: center to max frequency (exponential for more dramatic highs)
+      const t = clampedDev;
+      return FREQ_CENTER + (FREQ_MAX - FREQ_CENTER) * Math.pow(t, 0.7);
+    } else {
+      // Below VWAP: center to min frequency (exponential for more dramatic lows)
+      const t = -clampedDev;
+      return FREQ_CENTER - (FREQ_CENTER - FREQ_MIN) * Math.pow(t, 0.7);
+    }
+  }, []);
+
   const enableAudio = useCallback(async () => {
     try {
       const Tone = await import('tone');
@@ -116,8 +149,8 @@ export function useBellAudio(): UseBellAudioReturn {
 
       // Create reverb for bell-like decay
       const reverb = new Tone.Reverb({
-        decay: 2.5,
-        wet: 0.4,
+        decay: 2.0,
+        wet: 0.35,
         preDelay: 0.01,
       }).connect(limiter);
       await reverb.generate();
@@ -128,14 +161,14 @@ export function useBellAudio(): UseBellAudioReturn {
         oscillator: {
           type: 'fmsine',
           modulationType: 'sine',
-          modulationIndex: 3,
-          harmonicity: 3,
+          modulationIndex: 4,
+          harmonicity: 3.5,
         } as import('tone').OmniOscillatorOptions,
         envelope: {
-          attack: 0.005,
+          attack: 0.001,
           decay: 0.4,
           sustain: 0,
-          release: 1.0,
+          release: 0.8,
         },
       }).connect(reverb);
       bellSynthRef.current = bellSynth;
@@ -175,6 +208,10 @@ export function useBellAudio(): UseBellAudioReturn {
     waveformAnalyserRef.current = null;
     fftAnalyserRef.current = null;
 
+    // Reset VWAP tracking
+    priceHistoryRef.current = [];
+    currentVwapRef.current = null;
+
     setAudioState(prev => ({ ...prev, enabled: false }));
     setIsReady(false);
   }, []);
@@ -194,40 +231,63 @@ export function useBellAudio(): UseBellAudioReturn {
     });
   }, [updateVolume]);
 
-  const playBell = useCallback((direction: 'up' | 'down' | 'neutral') => {
+  const playBell = useCallback((price: number) => {
     if (!isReady || audioState.muted || !audioState.enabled || !bellSynthRef.current) {
       return;
     }
 
-    const config = BELL_CONFIG[direction];
+    const now = Date.now();
+
+    // Add price to history (using 1 as volume since we don't have real volume data)
+    priceHistoryRef.current.push({
+      price,
+      volume: 1,
+      timestamp: now,
+    });
+
+    // Calculate VWAP
+    const vwap = calculateVwap();
+    currentVwapRef.current = vwap;
+
+    // If we don't have enough data yet, use a neutral tone
+    if (vwap === null) {
+      bellSynthRef.current.triggerAttackRelease(FREQ_CENTER, '8n');
+      return;
+    }
+
+    // Calculate deviation as percentage from VWAP
+    const deviationPercent = ((price - vwap) / vwap) * 100;
+
+    // Normalize deviation to -1 to 1 range
+    const normalizedDeviation = deviationPercent / MAX_DEVIATION_PERCENT;
+    lastDeviationRef.current = normalizedDeviation;
+
+    // Get frequency based on deviation
+    const frequency = deviationToFrequency(normalizedDeviation);
+
+    // Adjust envelope based on deviation intensity
+    // More extreme = longer decay for dramatic effect
+    const intensity = Math.abs(normalizedDeviation);
     const synth = bellSynthRef.current;
 
-    // Update envelope for this bell type
-    synth.envelope.attack = config.attack;
-    synth.envelope.decay = config.decay;
-    synth.envelope.release = config.release;
-
-    // Play the bell
-    // For "up" direction, play ascending arpeggio (casino-like)
-    // For "down" direction, play single deep tone
-    // For "neutral" direction, play single middle tone
-
-    if (direction === 'up') {
-      // Casino winning sound: quick ascending notes
-      const now = toneRef.current?.now() || 0;
-      synth.triggerAttackRelease(config.baseFreq * 0.75, '16n', now);
-      synth.triggerAttackRelease(config.baseFreq, '16n', now + 0.08);
-      synth.triggerAttackRelease(config.baseFreq * 1.25, '8n', now + 0.16);
-    } else if (direction === 'down') {
-      // Sad descending sound
-      const now = toneRef.current?.now() || 0;
-      synth.triggerAttackRelease(config.baseFreq * 1.5, '16n', now);
-      synth.triggerAttackRelease(config.baseFreq, '4n', now + 0.1);
+    // Higher pitches get shorter, brighter attack; lower pitches get longer, softer attack
+    if (normalizedDeviation > 0.3) {
+      // High/winning sound - quick bright attack
+      synth.envelope.attack = 0.001;
+      synth.envelope.decay = 0.3 + intensity * 0.2;
+    } else if (normalizedDeviation < -0.3) {
+      // Low/sad sound - slightly slower attack, longer decay
+      synth.envelope.attack = 0.01;
+      synth.envelope.decay = 0.5 + intensity * 0.3;
     } else {
-      // Neutral: single tone
-      synth.triggerAttackRelease(config.baseFreq, '8n');
+      // Neutral
+      synth.envelope.attack = 0.005;
+      synth.envelope.decay = 0.4;
     }
-  }, [isReady, audioState.muted, audioState.enabled]);
+
+    // Play the bell at calculated frequency
+    bellSynthRef.current.triggerAttackRelease(frequency, '8n');
+  }, [isReady, audioState.muted, audioState.enabled, calculateVwap, deviationToFrequency]);
 
   const getWaveformData = useCallback((): Float32Array | null => {
     if (!waveformAnalyserRef.current) return null;
@@ -249,6 +309,14 @@ export function useBellAudio(): UseBellAudioReturn {
     return null;
   }, []);
 
+  const getVwapInfo = useCallback(() => {
+    if (currentVwapRef.current === null) return null;
+    return {
+      vwap: currentVwapRef.current,
+      deviation: lastDeviationRef.current,
+    };
+  }, []);
+
   return {
     audioState,
     isReady,
@@ -259,5 +327,6 @@ export function useBellAudio(): UseBellAudioReturn {
     playBell,
     getWaveformData,
     getFrequencyData,
+    getVwapInfo,
   };
 }
