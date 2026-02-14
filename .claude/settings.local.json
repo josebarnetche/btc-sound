@@ -29,7 +29,11 @@
       "Bash(git commit:*)",
       "Bash(gh repo create:*)",
       "Bash(npx vercel --prod --yes)",
-      "Bash(npx vercel:*)"
+      "Bash(npx vercel:*)",
+      "Bash(start https://btc-sound.vercel.app)",
+      "Bash(taskkill:*)",
+      "Bash(npx tsc:*)",
+      "Bash(git push:*)"
     ]
   }
 }

@@ -22,10 +22,10 @@ export default function Home() {
     disableAudio,
     setVolume,
     toggleMute,
-    playBell,
+    onPriceTick,
     getWaveformData,
     getFrequencyData,
-    getVwapInfo,
+    getTradeInfo,
   } = useBellAudio();
   const { history, addPrice } = usePriceHistory();
 
@@ -74,7 +74,6 @@ export default function Home() {
         direction = 'down';
       }
 
-      // Calculate magnitude (0-1) based on percent change
       magnitude = Math.min(Math.abs(percentChange) / 0.1, 1);
     }
 
@@ -83,11 +82,11 @@ export default function Home() {
     setPriceChange(change);
     setTrendDirection(direction);
 
-    // Play bell sound based on price deviation from VWAP
-    playBell(currentPrice);
+    // Process price tick through RSI strategy
+    onPriceTick(currentPrice);
 
     lastPriceRef.current = currentPrice;
-  }, [playBell]);
+  }, [onPriceTick]);
 
   // React to every price update
   useEffect(() => {
@@ -116,7 +115,7 @@ export default function Home() {
             BTC Sound
           </h1>
           <p className="text-sm text-zinc-500 text-center">
-            Bitcoin price bells - pitch follows VWAP deviation
+            RSI Reversion Strategy Sonification - BTCUSDC
           </p>
         </motion.div>
 
@@ -196,7 +195,7 @@ export default function Home() {
                 onDisable={disableAudio}
                 onVolumeChange={setVolume}
                 onMuteToggle={toggleMute}
-                getVwapInfo={getVwapInfo}
+                getTradeInfo={getTradeInfo}
               />
             </CardContent>
           </Card>
@@ -210,10 +209,10 @@ export default function Home() {
           className="text-center text-xs text-zinc-600 space-y-1"
         >
           <p>
-            Real-time data from Binance WebSocket
+            Real-time data from Binance WebSocket (BTCUSDC)
           </p>
           <p>
-            Simple bell sonification | Every tick = bell
+            RSI &lt;20 = Long | RSI &gt;80 = Short | Exit at RSI 50
           </p>
         </motion.footer>
       </div>

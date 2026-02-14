@@ -2,9 +2,24 @@
 
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Volume2, VolumeX, Bell, Power } from 'lucide-react';
+import { Volume2, VolumeX, Bell, Power, TrendingUp, TrendingDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
+
+interface TradeInfo {
+  inPosition: boolean;
+  position: {
+    side: 'LONG' | 'SHORT';
+    entryPrice: number;
+    entryRsi: number;
+    entryTime: number;
+  } | null;
+  currentRsi: number;
+  unrealizedPnlPercent: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+}
 
 interface AudioControlsProps {
   enabled: boolean;
@@ -15,7 +30,7 @@ interface AudioControlsProps {
   onDisable: () => void;
   onVolumeChange: (volume: number) => void;
   onMuteToggle: () => void;
-  getVwapInfo?: () => { vwap: number; deviation: number } | null;
+  getTradeInfo?: () => TradeInfo;
 }
 
 export function AudioControls({
@@ -27,21 +42,21 @@ export function AudioControls({
   onDisable,
   onVolumeChange,
   onMuteToggle,
-  getVwapInfo,
+  getTradeInfo,
 }: AudioControlsProps) {
-  const [vwapInfo, setVwapInfo] = useState<{ vwap: number; deviation: number } | null>(null);
+  const [tradeInfo, setTradeInfo] = useState<TradeInfo | null>(null);
 
-  // Poll VWAP info when enabled
+  // Poll trade info when enabled
   useEffect(() => {
-    if (!enabled || !getVwapInfo) return;
+    if (!enabled || !getTradeInfo) return;
 
     const interval = setInterval(() => {
-      const info = getVwapInfo();
-      setVwapInfo(info);
-    }, 200);
+      const info = getTradeInfo();
+      setTradeInfo(info);
+    }, 100);
 
     return () => clearInterval(interval);
-  }, [enabled, getVwapInfo]);
+  }, [enabled, getTradeInfo]);
 
   if (!enabled) {
     return (
@@ -59,35 +74,32 @@ export function AudioControls({
           Enable Sound
         </Button>
         <p className="text-sm text-zinc-500 text-center max-w-xs">
-          Bell pitch follows price deviation from VWAP. Above VWAP = higher pitch. Below = lower.
+          Follows RSI reversion strategy. Sound plays only when in a trade. Pitch = PnL.
         </p>
       </motion.div>
     );
   }
 
-  // Get color based on deviation
-  const getDeviationColor = () => {
-    if (!vwapInfo) return 'text-zinc-500';
-    const dev = vwapInfo.deviation;
-    if (dev > 0.5) return 'text-green-400';
-    if (dev > 0.2) return 'text-green-500';
-    if (dev < -0.5) return 'text-red-400';
-    if (dev < -0.2) return 'text-red-500';
+  // Get RSI color
+  const getRsiColor = () => {
+    if (!tradeInfo) return 'text-zinc-500';
+    const rsi = tradeInfo.currentRsi;
+    if (rsi <= 20) return 'text-green-400';
+    if (rsi <= 30) return 'text-green-500';
+    if (rsi >= 80) return 'text-red-400';
+    if (rsi >= 70) return 'text-red-500';
     return 'text-zinc-400';
   };
 
-  // Get pitch indicator
-  const getPitchIndicator = () => {
-    if (!vwapInfo) return 'Calculating...';
-    const dev = vwapInfo.deviation;
-    const clampedDev = Math.max(-1, Math.min(1, dev));
-    const percent = (clampedDev * 100).toFixed(1);
-
-    if (dev > 0.7) return `High pitch (+${percent}%)`;
-    if (dev > 0.3) return `Rising (+${percent}%)`;
-    if (dev < -0.7) return `Low pitch (${percent}%)`;
-    if (dev < -0.3) return `Falling (${percent}%)`;
-    return `Neutral (${dev >= 0 ? '+' : ''}${percent}%)`;
+  // Get PnL color
+  const getPnlColor = () => {
+    if (!tradeInfo || !tradeInfo.inPosition) return 'text-zinc-500';
+    const pnl = tradeInfo.unrealizedPnlPercent;
+    if (pnl > 0.5) return 'text-green-400';
+    if (pnl > 0) return 'text-green-500';
+    if (pnl < -0.5) return 'text-red-400';
+    if (pnl < 0) return 'text-red-500';
+    return 'text-zinc-400';
   };
 
   return (
@@ -101,17 +113,20 @@ export function AudioControls({
         <div className="flex items-center gap-2">
           <motion.div
             animate={{
-              scale: isReady ? [1, 1.1, 1] : 1,
+              scale: tradeInfo?.inPosition ? [1, 1.2, 1] : 1,
+              opacity: tradeInfo?.inPosition ? 1 : 0.5,
             }}
             transition={{
-              repeat: isReady ? Infinity : 0,
-              repeatDelay: 2,
-              duration: 0.5,
+              repeat: tradeInfo?.inPosition ? Infinity : 0,
+              repeatDelay: 0.5,
+              duration: 0.3,
             }}
           >
-            <Bell className="w-5 h-5 text-amber-400" />
+            <Bell className={`w-5 h-5 ${tradeInfo?.inPosition ? 'text-amber-400' : 'text-zinc-600'}`} />
           </motion.div>
-          <span className="text-sm text-zinc-400">Bell Audio Active</span>
+          <span className="text-sm text-zinc-400">
+            {tradeInfo?.inPosition ? 'In Trade' : 'Waiting for Signal'}
+          </span>
         </div>
 
         <Button
@@ -124,21 +139,46 @@ export function AudioControls({
         </Button>
       </div>
 
-      {/* VWAP Deviation Indicator */}
-      {vwapInfo && (
-        <div className="flex items-center justify-between px-3 py-2 bg-zinc-800/50 rounded-lg">
-          <div className="flex flex-col">
-            <span className="text-xs text-zinc-500">VWAP</span>
-            <span className="text-sm font-mono text-zinc-300">
-              ${vwapInfo.vwap.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      {/* RSI & Position Info */}
+      <div className="grid grid-cols-2 gap-3">
+        {/* RSI */}
+        <div className="px-3 py-2 bg-zinc-800/50 rounded-lg">
+          <span className="text-xs text-zinc-500 block">RSI (14)</span>
+          <span className={`text-lg font-mono font-bold ${getRsiColor()}`}>
+            {tradeInfo?.currentRsi.toFixed(1) ?? '--'}
+          </span>
+        </div>
+
+        {/* Position or Stats */}
+        {tradeInfo?.inPosition && tradeInfo.position ? (
+          <div className="px-3 py-2 bg-zinc-800/50 rounded-lg">
+            <div className="flex items-center gap-1">
+              {tradeInfo.position.side === 'LONG' ? (
+                <TrendingUp className="w-3 h-3 text-green-400" />
+              ) : (
+                <TrendingDown className="w-3 h-3 text-red-400" />
+              )}
+              <span className="text-xs text-zinc-500">{tradeInfo.position.side}</span>
+            </div>
+            <span className={`text-lg font-mono font-bold ${getPnlColor()}`}>
+              {tradeInfo.unrealizedPnlPercent >= 0 ? '+' : ''}
+              {tradeInfo.unrealizedPnlPercent.toFixed(3)}%
             </span>
           </div>
-          <div className="flex flex-col items-end">
-            <span className="text-xs text-zinc-500">Pitch</span>
-            <span className={`text-sm font-medium ${getDeviationColor()}`}>
-              {getPitchIndicator()}
+        ) : (
+          <div className="px-3 py-2 bg-zinc-800/50 rounded-lg">
+            <span className="text-xs text-zinc-500 block">W/L</span>
+            <span className="text-lg font-mono font-bold text-zinc-400">
+              {tradeInfo?.wins ?? 0}/{tradeInfo?.losses ?? 0}
             </span>
           </div>
+        )}
+      </div>
+
+      {/* Entry info when in position */}
+      {tradeInfo?.inPosition && tradeInfo.position && (
+        <div className="px-3 py-2 bg-zinc-800/30 rounded-lg text-xs text-zinc-500">
+          <span>Entry: ${tradeInfo.position.entryPrice.toLocaleString('en-US', { minimumFractionDigits: 2 })} @ RSI {tradeInfo.position.entryRsi.toFixed(1)}</span>
         </div>
       )}
 
@@ -173,7 +213,7 @@ export function AudioControls({
 
       {/* Info text */}
       <div className="text-xs text-zinc-600 text-center">
-        <p>Pitch varies continuously based on deviation from 1-min VWAP</p>
+        <p>No sound when flat | Entry = neutral | Profit = high | Loss = low</p>
       </div>
     </motion.div>
   );

@@ -3,8 +3,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { TradeData, ConnectionState } from '@/types';
 
-const WS_URL = 'wss://stream.binance.com:9443/ws/btcusdt@trade';
-const REST_URL = 'https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDT';
+const WS_URL = 'wss://stream.binance.com:9443/ws/btcusdc@trade';
+const REST_URL = 'https://data-api.binance.vision/api/v3/ticker/price?symbol=BTCUSDC';
 const MAX_RECONNECT_DELAY = 30000;
 const INITIAL_RECONNECT_DELAY = 1000;
 

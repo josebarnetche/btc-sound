@@ -8,6 +8,23 @@ interface BellAudioState {
   muted: boolean;
 }
 
+interface VirtualPosition {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  entryRsi: number;
+  entryTime: number;
+}
+
+interface TradeInfo {
+  inPosition: boolean;
+  position: VirtualPosition | null;
+  currentRsi: number;
+  unrealizedPnlPercent: number;
+  totalTrades: number;
+  wins: number;
+  losses: number;
+}
+
 interface UseBellAudioReturn {
   audioState: BellAudioState;
   isReady: boolean;
@@ -15,21 +32,25 @@ interface UseBellAudioReturn {
   disableAudio: () => void;
   setVolume: (volume: number) => void;
   toggleMute: () => void;
-  playBell: (price: number) => void;
+  onPriceTick: (price: number) => void;
   getWaveformData: () => Float32Array | null;
   getFrequencyData: () => Float32Array | null;
-  getVwapInfo: () => { vwap: number; deviation: number } | null;
+  getTradeInfo: () => TradeInfo;
 }
 
-// Bell frequency range (Hz)
-// Low pitch (far below VWAP) to high pitch (far above VWAP)
-const FREQ_MIN = 150;   // Deep low bell
-const FREQ_MAX = 1400;  // Bright high bell
-const FREQ_CENTER = 440; // A4 - neutral center
+// RSI Strategy Parameters (matching the bot)
+const RSI_PERIOD = 14;
+const RSI_OVERSOLD = 20;   // Enter LONG
+const RSI_OVERBOUGHT = 80; // Enter SHORT
+const RSI_EXIT = 50;       // Exit at mean
 
-// VWAP window settings
-const VWAP_WINDOW_MS = 60000; // 1 minute rolling window
-const MAX_DEVIATION_PERCENT = 0.5; // 0.5% deviation = max pitch shift
+// Bell frequency range
+const FREQ_MIN = 150;      // Deep loss
+const FREQ_CENTER = 440;   // Entry (0% PnL)
+const FREQ_MAX = 1400;     // Big profit
+
+// Max PnL% for full pitch range
+const MAX_PNL_PERCENT = 1.0; // 1% = max pitch shift
 
 const DEFAULT_STATE: BellAudioState = {
   enabled: false,
@@ -37,11 +58,28 @@ const DEFAULT_STATE: BellAudioState = {
   muted: false,
 };
 
-// Price tracking for VWAP calculation
-interface PriceEntry {
-  price: number;
-  volume: number;
-  timestamp: number;
+// Calculate RSI from price array
+function calculateRsi(prices: number[], period: number = 14): number {
+  if (prices.length < period + 1) {
+    return 50.0; // Neutral if not enough data
+  }
+
+  const deltas: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    deltas.push(prices[i] - prices[i - 1]);
+  }
+
+  const recentDeltas = deltas.slice(-period);
+  const gains = recentDeltas.map(d => (d > 0 ? d : 0));
+  const losses = recentDeltas.map(d => (d < 0 ? -d : 0));
+
+  const avgGain = gains.reduce((a, b) => a + b, 0) / period;
+  const avgLoss = losses.reduce((a, b) => a + b, 0) / period;
+
+  if (avgLoss === 0) return 100.0;
+
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
 
 export function useBellAudio(): UseBellAudioReturn {
@@ -56,10 +94,20 @@ export function useBellAudio(): UseBellAudioReturn {
   const waveformAnalyserRef = useRef<import('tone').Analyser | null>(null);
   const fftAnalyserRef = useRef<import('tone').Analyser | null>(null);
 
-  // VWAP tracking
-  const priceHistoryRef = useRef<PriceEntry[]>([]);
-  const currentVwapRef = useRef<number | null>(null);
-  const lastDeviationRef = useRef<number>(0);
+  // RSI & Position tracking
+  const priceHistoryRef = useRef<number[]>([]);
+  const currentRsiRef = useRef<number>(50);
+  const positionRef = useRef<VirtualPosition | null>(null);
+  const lastPnlPercentRef = useRef<number>(0);
+
+  // Stats
+  const totalTradesRef = useRef<number>(0);
+  const winsRef = useRef<number>(0);
+  const lossesRef = useRef<number>(0);
+
+  // Throttle sound to avoid too many bells
+  const lastSoundTimeRef = useRef<number>(0);
+  const SOUND_THROTTLE_MS = 150;
 
   // Load saved preferences
   useEffect(() => {
@@ -73,7 +121,7 @@ export function useBellAudio(): UseBellAudioReturn {
         muted: savedMuted === 'true',
       }));
     } catch {
-      // Ignore localStorage errors
+      // Ignore
     }
   }, []);
 
@@ -83,48 +131,21 @@ export function useBellAudio(): UseBellAudioReturn {
       localStorage.setItem('btc-bell-volume', audioState.volume.toString());
       localStorage.setItem('btc-bell-muted', audioState.muted.toString());
     } catch {
-      // Ignore localStorage errors
+      // Ignore
     }
   }, [audioState.volume, audioState.muted]);
 
-  // Calculate VWAP from price history
-  const calculateVwap = useCallback(() => {
-    const now = Date.now();
-    const cutoff = now - VWAP_WINDOW_MS;
+  // Map PnL% to frequency
+  const pnlToFrequency = useCallback((pnlPercent: number): number => {
+    // Normalize to -1 to 1
+    const normalized = Math.max(-1, Math.min(1, pnlPercent / MAX_PNL_PERCENT));
 
-    // Clean old entries
-    priceHistoryRef.current = priceHistoryRef.current.filter(e => e.timestamp > cutoff);
-
-    if (priceHistoryRef.current.length === 0) {
-      return null;
-    }
-
-    // Calculate VWAP: sum(price * volume) / sum(volume)
-    let sumPV = 0;
-    let sumV = 0;
-
-    for (const entry of priceHistoryRef.current) {
-      sumPV += entry.price * entry.volume;
-      sumV += entry.volume;
-    }
-
-    return sumV > 0 ? sumPV / sumV : null;
-  }, []);
-
-  // Map deviation to frequency
-  // deviation: -1 to 1 (normalized), where -1 = far below VWAP, 1 = far above VWAP
-  const deviationToFrequency = useCallback((deviation: number): number => {
-    // Clamp deviation to -1 to 1
-    const clampedDev = Math.max(-1, Math.min(1, deviation));
-
-    if (clampedDev >= 0) {
-      // Above VWAP: center to max frequency (exponential for more dramatic highs)
-      const t = clampedDev;
-      return FREQ_CENTER + (FREQ_MAX - FREQ_CENTER) * Math.pow(t, 0.7);
+    if (normalized >= 0) {
+      // Profit: center to max
+      return FREQ_CENTER + (FREQ_MAX - FREQ_CENTER) * Math.pow(normalized, 0.7);
     } else {
-      // Below VWAP: center to min frequency (exponential for more dramatic lows)
-      const t = -clampedDev;
-      return FREQ_CENTER - (FREQ_CENTER - FREQ_MIN) * Math.pow(t, 0.7);
+      // Loss: center to min
+      return FREQ_CENTER - (FREQ_CENTER - FREQ_MIN) * Math.pow(-normalized, 0.7);
     }
   }, []);
 
@@ -135,11 +156,9 @@ export function useBellAudio(): UseBellAudioReturn {
 
       await Tone.start();
 
-      // Create limiter (end of chain)
       const limiter = new Tone.Limiter(-3).toDestination();
       limiterRef.current = limiter;
 
-      // Create analysers for visualization
       const waveformAnalyser = new Tone.Analyser('waveform', 256);
       const fftAnalyser = new Tone.Analyser('fft', 256);
       waveformAnalyserRef.current = waveformAnalyser;
@@ -147,16 +166,14 @@ export function useBellAudio(): UseBellAudioReturn {
       limiter.connect(waveformAnalyser);
       limiter.connect(fftAnalyser);
 
-      // Create reverb for bell-like decay
       const reverb = new Tone.Reverb({
-        decay: 2.0,
-        wet: 0.35,
+        decay: 1.8,
+        wet: 0.3,
         preDelay: 0.01,
       }).connect(limiter);
       await reverb.generate();
       reverbRef.current = reverb;
 
-      // Create FM synth for bell tones
       const bellSynth = new Tone.Synth({
         oscillator: {
           type: 'fmsine',
@@ -166,14 +183,13 @@ export function useBellAudio(): UseBellAudioReturn {
         } as import('tone').OmniOscillatorOptions,
         envelope: {
           attack: 0.001,
-          decay: 0.4,
+          decay: 0.35,
           sustain: 0,
-          release: 0.8,
+          release: 0.6,
         },
       }).connect(reverb);
       bellSynthRef.current = bellSynth;
 
-      // Set initial volume
       updateVolume(audioState.volume, audioState.muted);
 
       setAudioState(prev => ({ ...prev, enabled: true }));
@@ -185,11 +201,9 @@ export function useBellAudio(): UseBellAudioReturn {
 
   const updateVolume = useCallback((volume: number, muted: boolean) => {
     if (!bellSynthRef.current) return;
-
     if (muted) {
       bellSynthRef.current.volume.value = -Infinity;
     } else {
-      // Convert linear 0-1 to dB (-40 to 0)
       const db = volume > 0 ? -40 + (volume * 40) : -Infinity;
       bellSynthRef.current.volume.value = db;
     }
@@ -207,10 +221,6 @@ export function useBellAudio(): UseBellAudioReturn {
     limiterRef.current = null;
     waveformAnalyserRef.current = null;
     fftAnalyserRef.current = null;
-
-    // Reset VWAP tracking
-    priceHistoryRef.current = [];
-    currentVwapRef.current = null;
 
     setAudioState(prev => ({ ...prev, enabled: false }));
     setIsReady(false);
@@ -231,63 +241,111 @@ export function useBellAudio(): UseBellAudioReturn {
     });
   }, [updateVolume]);
 
-  const playBell = useCallback((price: number) => {
+  const playBell = useCallback((pnlPercent: number) => {
     if (!isReady || audioState.muted || !audioState.enabled || !bellSynthRef.current) {
       return;
     }
 
     const now = Date.now();
+    if (now - lastSoundTimeRef.current < SOUND_THROTTLE_MS) {
+      return;
+    }
+    lastSoundTimeRef.current = now;
 
-    // Add price to history (using 1 as volume since we don't have real volume data)
-    priceHistoryRef.current.push({
-      price,
-      volume: 1,
-      timestamp: now,
-    });
+    const frequency = pnlToFrequency(pnlPercent);
+    const synth = bellSynthRef.current;
 
-    // Calculate VWAP
-    const vwap = calculateVwap();
-    currentVwapRef.current = vwap;
+    // Adjust envelope based on profit/loss
+    if (pnlPercent > 0.3) {
+      synth.envelope.attack = 0.001;
+      synth.envelope.decay = 0.25;
+    } else if (pnlPercent < -0.3) {
+      synth.envelope.attack = 0.01;
+      synth.envelope.decay = 0.5;
+    } else {
+      synth.envelope.attack = 0.005;
+      synth.envelope.decay = 0.35;
+    }
 
-    // If we don't have enough data yet, use a neutral tone
-    if (vwap === null) {
-      bellSynthRef.current.triggerAttackRelease(FREQ_CENTER, '8n');
+    synth.triggerAttackRelease(frequency, '16n');
+  }, [isReady, audioState.muted, audioState.enabled, pnlToFrequency]);
+
+  const onPriceTick = useCallback((price: number) => {
+    // Add to price history
+    priceHistoryRef.current.push(price);
+    // Keep last 100 prices
+    if (priceHistoryRef.current.length > 100) {
+      priceHistoryRef.current = priceHistoryRef.current.slice(-100);
+    }
+
+    // Calculate RSI
+    const rsi = calculateRsi(priceHistoryRef.current, RSI_PERIOD);
+    currentRsiRef.current = rsi;
+
+    const position = positionRef.current;
+
+    // Check for exit first
+    if (position) {
+      let shouldExit = false;
+      let pnlPercent = 0;
+
+      if (position.side === 'LONG') {
+        pnlPercent = ((price - position.entryPrice) / position.entryPrice) * 100;
+        if (rsi >= RSI_EXIT) {
+          shouldExit = true;
+        }
+      } else {
+        pnlPercent = ((position.entryPrice - price) / position.entryPrice) * 100;
+        if (rsi <= RSI_EXIT) {
+          shouldExit = true;
+        }
+      }
+
+      lastPnlPercentRef.current = pnlPercent;
+
+      if (shouldExit) {
+        // Close position
+        totalTradesRef.current += 1;
+        if (pnlPercent > 0) {
+          winsRef.current += 1;
+        } else {
+          lossesRef.current += 1;
+        }
+        positionRef.current = null;
+        lastPnlPercentRef.current = 0;
+        // Don't play sound on exit, just stop
+        return;
+      }
+
+      // In position - play bell based on PnL
+      playBell(pnlPercent);
       return;
     }
 
-    // Calculate deviation as percentage from VWAP
-    const deviationPercent = ((price - vwap) / vwap) * 100;
-
-    // Normalize deviation to -1 to 1 range
-    const normalizedDeviation = deviationPercent / MAX_DEVIATION_PERCENT;
-    lastDeviationRef.current = normalizedDeviation;
-
-    // Get frequency based on deviation
-    const frequency = deviationToFrequency(normalizedDeviation);
-
-    // Adjust envelope based on deviation intensity
-    // More extreme = longer decay for dramatic effect
-    const intensity = Math.abs(normalizedDeviation);
-    const synth = bellSynthRef.current;
-
-    // Higher pitches get shorter, brighter attack; lower pitches get longer, softer attack
-    if (normalizedDeviation > 0.3) {
-      // High/winning sound - quick bright attack
-      synth.envelope.attack = 0.001;
-      synth.envelope.decay = 0.3 + intensity * 0.2;
-    } else if (normalizedDeviation < -0.3) {
-      // Low/sad sound - slightly slower attack, longer decay
-      synth.envelope.attack = 0.01;
-      synth.envelope.decay = 0.5 + intensity * 0.3;
-    } else {
-      // Neutral
-      synth.envelope.attack = 0.005;
-      synth.envelope.decay = 0.4;
+    // Check for entry signals (no position)
+    if (rsi <= RSI_OVERSOLD) {
+      // Enter LONG
+      positionRef.current = {
+        side: 'LONG',
+        entryPrice: price,
+        entryRsi: rsi,
+        entryTime: Date.now(),
+      };
+      lastPnlPercentRef.current = 0;
+      playBell(0); // Neutral pitch on entry
+    } else if (rsi >= RSI_OVERBOUGHT) {
+      // Enter SHORT
+      positionRef.current = {
+        side: 'SHORT',
+        entryPrice: price,
+        entryRsi: rsi,
+        entryTime: Date.now(),
+      };
+      lastPnlPercentRef.current = 0;
+      playBell(0); // Neutral pitch on entry
     }
-
-    // Play the bell at calculated frequency
-    bellSynthRef.current.triggerAttackRelease(frequency, '8n');
-  }, [isReady, audioState.muted, audioState.enabled, calculateVwap, deviationToFrequency]);
+    // No position and no signal = no sound
+  }, [playBell]);
 
   const getWaveformData = useCallback((): Float32Array | null => {
     if (!waveformAnalyserRef.current) return null;
@@ -309,11 +367,15 @@ export function useBellAudio(): UseBellAudioReturn {
     return null;
   }, []);
 
-  const getVwapInfo = useCallback(() => {
-    if (currentVwapRef.current === null) return null;
+  const getTradeInfo = useCallback((): TradeInfo => {
     return {
-      vwap: currentVwapRef.current,
-      deviation: lastDeviationRef.current,
+      inPosition: positionRef.current !== null,
+      position: positionRef.current,
+      currentRsi: currentRsiRef.current,
+      unrealizedPnlPercent: lastPnlPercentRef.current,
+      totalTrades: totalTradesRef.current,
+      wins: winsRef.current,
+      losses: lossesRef.current,
     };
   }, []);
 
@@ -324,9 +386,9 @@ export function useBellAudio(): UseBellAudioReturn {
     disableAudio,
     setVolume,
     toggleMute,
-    playBell,
+    onPriceTick,
     getWaveformData,
     getFrequencyData,
-    getVwapInfo,
+    getTradeInfo,
   };
 }

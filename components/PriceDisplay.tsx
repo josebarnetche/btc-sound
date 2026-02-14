@@ -62,7 +62,7 @@ export function PriceDisplay({ price, priceChange }: PriceDisplayProps) {
   return (
     <div className="flex flex-col items-center gap-4">
       <div className="flex items-center gap-3">
-        <span className="text-zinc-500 text-lg font-medium">BTC/USDT</span>
+        <span className="text-zinc-500 text-lg font-medium">BTC/USDC</span>
         <motion.div
           key={direction}
           initial={{ scale: 0.8, opacity: 0 }}
