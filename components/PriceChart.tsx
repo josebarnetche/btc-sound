@@ -10,10 +10,18 @@ import {
   Tooltip,
 } from 'recharts';
 import type { PricePoint } from '@/types';
-import { formatPrice } from '@/lib/priceAnalysis';
 
 interface PriceChartProps {
   data: PricePoint[];
+}
+
+function formatPrice(price: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(price);
 }
 
 export function PriceChart({ data }: PriceChartProps) {

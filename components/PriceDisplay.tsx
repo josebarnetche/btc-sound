@@ -2,12 +2,25 @@
 
 import { motion } from 'framer-motion';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { formatPrice, formatPercentChange } from '@/lib/priceAnalysis';
 import type { PriceChange } from '@/types';
 
 interface PriceDisplayProps {
   price: number | null;
   priceChange: PriceChange | null;
+}
+
+function formatPrice(price: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(price);
+}
+
+function formatPercentChange(percent: number): string {
+  const sign = percent >= 0 ? '+' : '';
+  return `${sign}${percent.toFixed(4)}%`;
 }
 
 export function PriceDisplay({ price, priceChange }: PriceDisplayProps) {

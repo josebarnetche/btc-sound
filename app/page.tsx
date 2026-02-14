@@ -9,34 +9,23 @@ import { AudioControls } from '@/components/AudioControls';
 import { AudioVisualizer } from '@/components/AudioVisualizer';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { useBinanceWebSocket } from '@/hooks/useBinanceWebSocket';
-import { useMelodicEngine } from '@/hooks/useMelodicEngine';
+import { useBellAudio } from '@/hooks/useBellAudio';
 import { usePriceHistory } from '@/hooks/usePriceHistory';
-import { analyzePriceChangeImmediate } from '@/lib/priceAnalysis';
-import type { PriceChange } from '@/types';
+import type { PriceChange, VisualizationMode } from '@/types';
 
 export default function Home() {
   const { price, connectionState } = useBinanceWebSocket();
   const {
     audioState,
     isReady,
-    ticksPerSecond,
-    currentSoundPack,
-    currentPattern,
-    harmonyDescription,
     enableAudio,
     disableAudio,
-    setMasterVolume,
-    setLayerVolume,
-    setSoundMode,
-    setScale,
-    setSoundPack,
+    setVolume,
     toggleMute,
-    playTick,
+    playBell,
     getWaveformData,
     getFrequencyData,
-    visualizerMode,
-    setVisualizerMode,
-  } = useMelodicEngine();
+  } = useBellAudio();
   const { history, addPrice } = usePriceHistory();
 
   // Track last price for change calculation
@@ -45,22 +34,59 @@ export default function Home() {
   // State for values that are rendered
   const [priceChange, setPriceChange] = useState<PriceChange | null>(null);
   const [trendDirection, setTrendDirection] = useState<'up' | 'down' | 'neutral'>('neutral');
+  const [visualizerMode, setVisualizerMode] = useState<VisualizationMode>('off');
 
-  // Handle every price tick - no debouncing, immediate response
+  // Load visualizer preference
+  useEffect(() => {
+    try {
+      const savedVisualizer = localStorage.getItem('btc-visualizer-mode');
+      if (savedVisualizer) {
+        setVisualizerMode(savedVisualizer as VisualizationMode);
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  // Save visualizer preference
+  useEffect(() => {
+    try {
+      localStorage.setItem('btc-visualizer-mode', visualizerMode);
+    } catch {
+      // Ignore
+    }
+  }, [visualizerMode]);
+
+  // Handle every price tick
   const handlePriceTick = useCallback((currentPrice: number, prevPrice: number | null) => {
-    // Calculate change for this specific tick
-    const change = analyzePriceChangeImmediate(currentPrice, prevPrice);
+    let direction: 'up' | 'down' | 'neutral' = 'neutral';
+    let magnitude = 0;
+    let percentChange = 0;
 
-    // Store for display (using state for rendered values)
+    if (prevPrice !== null) {
+      const diff = currentPrice - prevPrice;
+      percentChange = (diff / prevPrice) * 100;
+
+      if (diff > 0) {
+        direction = 'up';
+      } else if (diff < 0) {
+        direction = 'down';
+      }
+
+      // Calculate magnitude (0-1) based on percent change
+      magnitude = Math.min(Math.abs(percentChange) / 0.1, 1);
+    }
+
+    const change: PriceChange = { direction, magnitude, percentChange };
+
     setPriceChange(change);
-    setTrendDirection(change.direction);
+    setTrendDirection(direction);
 
-    // Play sound for this tick
-    playTick(currentPrice, change);
+    // Play bell sound based on direction
+    playBell(direction);
 
-    // Update last price
     lastPriceRef.current = currentPrice;
-  }, [playTick]);
+  }, [playBell]);
 
   // React to every price update
   useEffect(() => {
@@ -69,7 +95,7 @@ export default function Home() {
     }
   }, [price, handlePriceTick]);
 
-  // Add price to history (throttled separately)
+  // Add price to history
   useEffect(() => {
     if (price !== null) {
       addPrice(price);
@@ -89,7 +115,7 @@ export default function Home() {
             BTC Sound
           </h1>
           <p className="text-sm text-zinc-500 text-center">
-            Melodic Bitcoin sonification - every tick creates music
+            Bitcoin price bells - up = winning, down = deep
           </p>
         </motion.div>
 
@@ -161,19 +187,13 @@ export default function Home() {
           <Card className="bg-card/50 backdrop-blur border-zinc-800/50 w-full max-w-md">
             <CardContent className="p-6">
               <AudioControls
-                audioState={audioState}
+                enabled={audioState.enabled}
+                volume={audioState.volume}
+                muted={audioState.muted}
                 isReady={isReady}
-                ticksPerSecond={ticksPerSecond}
-                currentSoundPack={currentSoundPack}
-                currentPattern={currentPattern}
-                harmonyDescription={harmonyDescription}
                 onEnable={enableAudio}
                 onDisable={disableAudio}
-                onMasterVolumeChange={setMasterVolume}
-                onLayerVolumeChange={setLayerVolume}
-                onSoundModeChange={setSoundMode}
-                onScaleChange={setScale}
-                onSoundPackChange={setSoundPack}
+                onVolumeChange={setVolume}
                 onMuteToggle={toggleMute}
               />
             </CardContent>
@@ -191,7 +211,7 @@ export default function Home() {
             Real-time data from Binance WebSocket
           </p>
           <p>
-            Pentatonic melodies | Multi-layer soundscape | AI harmonies | Every tick = sound
+            Simple bell sonification | Every tick = bell
           </p>
         </motion.footer>
       </div>
